@@ -1,0 +1,10 @@
+# ═══════════════════════════════════════════════════════════
+#  Namespace JuriBook — isole toutes les ressources du projet
+#  du reste du cluster.
+# ═══════════════════════════════════════════════════════════
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: juribook
+  labels:
+    project: juribook

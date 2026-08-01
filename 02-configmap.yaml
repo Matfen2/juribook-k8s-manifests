@@ -1,0 +1,26 @@
+# ═══════════════════════════════════════════════════════════
+#  ConfigMap commun — variables non sensibles partagées par
+#  tous les microservices.
+# ═══════════════════════════════════════════════════════════
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: juribook-common-config
+  namespace: juribook
+data:
+  SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka:29092"
+
+  AUTH_SERVICE_BASE_URL: "http://auth-service:8081"
+  LAWYER_SERVICE_BASE_URL: "http://lawyer-service:8082"
+  BOOKING_SERVICE_BASE_URL: "http://booking-service:8083"
+  NOTIFICATION_SERVICE_BASE_URL: "http://notification-service:8084"
+  AUDIT_SERVICE_BASE_URL: "http://audit-service:8085"
+
+  AUTH_SERVICE_URL: "http://auth-service:8081"
+  LAWYER_SERVICE_URL: "http://lawyer-service:8082"
+  BOOKING_SERVICE_URL: "http://booking-service:8083"
+  NOTIFICATION_SERVICE_URL: "http://notification-service:8084"
+  AUDIT_SERVICE_URL: "http://audit-service:8085"
+
+  MAIL_HOST: "mailhog"
+  MAIL_PORT: "1025"

@@ -1,0 +1,104 @@
+# ═══════════════════════════════════════════════════════════
+#  PostgreSQL - auditdb (audit-service) — usage LOCAL uniquement
+#  (Minikube). En déploiement cloud, ce fichier est remplacé par
+#  une base de données managée (voir README, section Cloud).
+# ═══════════════════════════════════════════════════════════
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-audit-pvc
+  namespace: juribook
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-audit
+  namespace: juribook
+  labels:
+    app: postgres-audit
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres-audit
+  template:
+    metadata:
+      labels:
+        app: postgres-audit
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: "auditdb"
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_PASSWORD
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+              subPath: pgdata
+            - name: init-script
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "$(POSTGRES_USER)", "-d", "auditdb"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "$(POSTGRES_USER)", "-d", "auditdb"]
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-audit-pvc
+        - name: init-script
+          configMap:
+            name: init-auditdb-sql
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-audit
+  namespace: juribook
+spec:
+  selector:
+    app: postgres-audit
+  ports:
+    - port: 5432
+      targetPort: 5432
+  type: ClusterIP

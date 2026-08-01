@@ -1,0 +1,136 @@
+# ═══════════════════════════════════════════════════════════
+#  Kafka en mode KRaft (sans Zookeeper) — StatefulSet pour
+#  l'identité de stockage stable du broker.
+#
+#  Trois points d'attention intégrés ici après debug réel :
+#
+#  1. publishNotReadyAddresses: true sur le Service headless.
+#     Sans ça, le broker ne peut jamais devenir Ready : il doit
+#     se résoudre lui-même via kafka-0.kafka pour dialoguer avec
+#     le contrôleur KRaft, mais Kubernetes ne publie le DNS d'un
+#     pod dans un Service headless qu'une fois ce pod Ready —
+#     boucle bloquante sans cette option.
+#
+#  2. securityContext.fsGroup au niveau du pod. Sur certains CSI
+#     drivers cloud (ex: Scaleway), le volume monté appartient à
+#     root par défaut alors que cp-kafka tourne en UID/GID 1000 —
+#     sans fsGroup, le preflight check "path not writable" fait
+#     échouer le conteneur au démarrage.
+#
+#  3. KAFKA_LOG_DIRS pointe vers un SOUS-RÉPERTOIRE du volume
+#     monté, pas sa racine. Les volumes formatés en ext4 (comportement
+#     courant chez les providers cloud) créent un dossier
+#     "lost+found" à la racine — Kafka refuse de démarrer si son
+#     répertoire de logs contient autre chose que des dossiers
+#     topic-partition.
+# ═══════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  namespace: juribook
+spec:
+  serviceName: kafka
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: kafka
+          image: confluentinc/cp-kafka:7.6.1
+          ports:
+            - containerPort: 29092
+              name: internal
+            - containerPort: 9093
+              name: controller
+          env:
+            - name: KAFKA_NODE_ID
+              value: "1"
+            - name: KAFKA_PROCESS_ROLES
+              value: "broker,controller"
+            - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+              value: "1@kafka-0.kafka:9093"
+            - name: KAFKA_LISTENERS
+              value: "PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093"
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: "PLAINTEXT://kafka:29092"
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT"
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME
+              value: "PLAINTEXT"
+            - name: KAFKA_CONTROLLER_LISTENER_NAMES
+              value: "CONTROLLER"
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "1"
+            - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
+              value: "false"
+            - name: KAFKA_LOG_DIRS
+              value: "/var/lib/kafka/data/logs"
+            - name: CLUSTER_ID
+              value: "MkU3OEVBNTcwNTJENDM2Qg"
+          volumeMounts:
+            - name: kafka-data
+              mountPath: /var/lib/kafka/data
+          startupProbe:
+            exec:
+              command: ["kafka-topics", "--bootstrap-server", "localhost:29092", "--list"]
+            periodSeconds: 10
+            failureThreshold: 30
+            timeoutSeconds: 10
+          readinessProbe:
+            exec:
+              command: ["kafka-topics", "--bootstrap-server", "localhost:29092", "--list"]
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["kafka-topics", "--bootstrap-server", "localhost:29092", "--list"]
+            periodSeconds: 20
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: kafka-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: juribook
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: kafka
+  ports:
+    - name: internal
+      port: 29092
+      targetPort: 29092
+    - name: controller
+      port: 9093
+      targetPort: 9093

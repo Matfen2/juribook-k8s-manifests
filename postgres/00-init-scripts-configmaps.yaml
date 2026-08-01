@@ -1,0 +1,55 @@
+# ═══════════════════════════════════════════════════════════
+#  Scripts d'init SQL des 5 bases, montés dans
+#  /docker-entrypoint-initdb.d au démarrage de chaque pod
+#  Postgres.
+# ═══════════════════════════════════════════════════════════
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: init-authdb-sql
+  namespace: juribook
+data:
+  init.sql: |
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: init-lawyerdb-sql
+  namespace: juribook
+data:
+  init.sql: |
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS "unaccent";
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: init-bookingdb-sql
+  namespace: juribook
+data:
+  init.sql: |
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: init-notificationdb-sql
+  namespace: juribook
+data:
+  init.sql: |
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: init-auditdb-sql
+  namespace: juribook
+data:
+  init.sql: |
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
