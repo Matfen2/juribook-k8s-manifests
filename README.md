@@ -1,19 +1,16 @@
-# JuriBook — Manifestes Kubernetes
-
-Sprint 8.2 — reconstruit intégralement après une première phase de test réel sur Minikube et Scaleway Kapsule, avec chaque problème rencontré déjà corrigé dans les manifestes ci-dessous. Reproduit l'architecture du `docker-compose.yml` local : Kafka KRaft, 5 bases PostgreSQL, 6 microservices, MailHog, exposés via un Ingress unique sur `api-gateway`.
-
-## Structure
+# JuriBook - Manifestes Kubernetes
 
 ```
-k8s/
+juribook-kubernetes/
 ├── 00-namespace.yaml
 ├── 01-secrets.yaml
 ├── 02-configmap.yaml
-├── kafka.yaml                      # StatefulSet Kafka KRaft + Service headless
-├── kafka-init-job.yaml             # Job one-shot : provisionne les 8 topics
+├── kafka.yaml                      ← StatefulSet Kafka KRaft + Service headless
+├── kafka-init-job.yaml              ← Job one-shot : provisionne les 8 topics
 ├── mailhog.yaml
 ├── ingress.yaml
-├── postgres/                       # Postgres local — usage Minikube uniquement
+├── rdb-extensions-job.yaml           ← Job one-shot, déploiement cloud uniquement
+├── postgres/                          ← Postgres local - usage Minikube uniquement
 │   ├── 00-init-scripts-configmaps.yaml
 │   └── postgres-{auth,lawyer,booking,notification,audit}.yaml
 └── services/
@@ -25,52 +22,59 @@ k8s/
     └── api-gateway.yaml
 ```
 
+Manifestes Deployment/Service/Ingress pour les 6 microservices JuriBook, Kafka KRaft, PostgreSQL et MailHog. Applicables sur deux environnements distincts :
+- **Local** (Minikube), 5 Postgres locaux, images buildées et chargées à la main
+- **Cloud** (Scaleway Kapsule, dépôt `juribook-terraform`), base RDB managée, images poussées sur un registre, déploiement automatisé par CI/CD
+
+**Statut : ✅ validé sur les deux environnements.** Testé de bout en bout en local (Minikube) et sur le cluster cloud Scaleway (`curl /actuator/health` → `{"status":"UP"}`).
+
 ---
 
-## ⚠️ Leçons apprises — déjà corrigées ici, à ne pas redécouvrir
+## ⚠️ Leçons apprises - déjà corrigées ici, à ne pas redécouvrir
 
-Ces quatre problèmes sont survenus lors des tests réels (Minikube puis Scaleway Kapsule) et sont déjà résolus dans les fichiers de ce dépôt. Les documenter évite de perdre du temps à les redébugger si les manifestes sont copiés ou adaptés ailleurs.
+Quatre problèmes rencontrés en conditions réelles (Minikube puis Scaleway), tous déjà résolus dans les manifestes de ce dépôt.
 
-### 1. Kafka en `CrashLoopBackOff` — DNS auto-référencé
-Le broker KRaft doit se résoudre lui-même via `kafka-0.kafka` pour dialoguer avec le contrôleur. Un Service headless ne publie le DNS d'un pod qu'une fois ce pod `Ready` — boucle bloquante sans intervention.
+### 1. Kafka en `CrashLoopBackOff` - DNS auto-référencé
+Le broker KRaft doit se résoudre lui-même via `kafka-0.kafka` pour dialoguer avec le contrôleur. Un Service headless ne publie le DNS d'un pod qu'une fois ce pod `Ready` - boucle bloquante sans intervention.
 **Fix** (déjà dans `kafka.yaml`) : `publishNotReadyAddresses: true` sur le Service.
 
-### 2. Kafka — `path not writable` sur le volume
+### 2. Kafka - `path not writable` sur le volume
 Certains CSI drivers cloud (ex: Scaleway) montent les PVC avec un propriétaire `root`, alors que `cp-kafka` tourne en UID/GID 1000.
 **Fix** (déjà dans `kafka.yaml`) : `securityContext.fsGroup: 1000` au niveau du pod.
 
-### 3. Kafka — erreur `lost+found` au démarrage
-Les volumes formatés en ext4 créent un dossier `lost+found` à leur racine ; Kafka refuse de démarrer si son répertoire de logs contient autre chose que des dossiers `topic-partition`.
+### 3. Kafka - erreur `lost+found` au démarrage
+Les volumes formatés en ext4 (comportement courant chez les providers cloud) créent un dossier `lost+found` à leur racine ; Kafka refuse de démarrer si son répertoire de logs contient autre chose que des dossiers `topic-partition`.
 **Fix** (déjà dans `kafka.yaml`) : `KAFKA_LOG_DIRS` pointe vers un sous-répertoire (`/var/lib/kafka/data/logs`), pas la racine du volume monté.
 
-### 4. Microservices Java — `OOMKilled` et `CrashLoopBackOff` en boucle
+### 4. Microservices Java - `OOMKilled` et `CrashLoopBackOff` en boucle
 Deux causes cumulées, corrigées dans les 6 fichiers `services/*.yaml` :
-- **Mémoire** : `JAVA_OPTS=-XX:MaxRAMPercentage=75.0` injecté en variable d'environnement (le Dockerfile lit déjà `$JAVA_OPTS` dans son `ENTRYPOINT`) — sans ça, la JVM peut mal évaluer la mémoire réellement disponible dans le conteneur.
-- **CPU** : limite remontée à `1` vCPU (pas `500m`). Spring Boot est très gourmand en CPU au démarrage (JIT, chargement de classes) ; une limite trop stricte provoque un throttling si sévère que le pod n'a jamais le temps de finir de démarrer avant que la probe de liveness ne le tue, en boucle infinie.
-- **`startupProbe`** ajoutée sur les 6 services (`failureThreshold: 30` × `periodSeconds: 10` = 5 min de budget) : tant qu'elle n'a pas réussi une fois, `readiness`/`liveness` restent suspendues, évitant de tuer un pod encore en train de démarrer sous charge partagée.
+- **Mémoire** : `JAVA_OPTS=-XX:MaxRAMPercentage=75.0` injecté en variable d'environnement (le Dockerfile lit déjà `$JAVA_OPTS` dans son `ENTRYPOINT`).
+- **CPU** : limite remontée à `1` vCPU (pas `500m`). Spring Boot est très gourmand en CPU au démarrage ; une limite trop stricte provoque un throttling si sévère que le pod n'a jamais le temps de finir de démarrer avant que la probe de liveness ne le tue, en boucle infinie.
+- **`startupProbe`** ajoutée sur les 6 services (5 min de budget) : tant qu'elle n'a pas réussi une fois, `readiness`/`liveness` restent suspendues.
+
+### 5. Registre privé Scaleway - `insufficient_scope` malgré `docker login` réussi (déploiement cloud)
+Un `docker push` réussi depuis ta machine ne suffit pas : le **cluster Kapsule lui-même** a besoin de son propre secret Kubernetes pour tirer une image d'un registre privé. Copier `~/.docker/config.json` dans un secret ne fonctionne pas non plus si Docker Desktop délègue le stockage réel des credentials au gestionnaire Windows (`credsStore`), le fichier copié est alors vide de tokens exploitables.
+**Fix** :
+```powershell
+kubectl create secret docker-registry regcred --docker-server=rg.fr-par.scw.cloud --docker-username=nologin --docker-password=<ta_secret_key> -n juribook
+kubectl patch serviceaccount default -n juribook -p "{\"imagePullSecrets\": [{\"name\": \"regcred\"}]}"
+```
+Le ServiceAccount `default` du namespace hérite du secret pour tous les pods qui l'utilisent (cas de tous les nôtres).
 
 ---
 
-## Prérequis
+## Déploiement local (Minikube)
 
-### Images
-
-Sur Minikube/Kind, il faut build puis charger chaque image manuellement (K8s ne build pas comme Docker Compose) :
+### Prérequis
 ```powershell
 docker build -t docker-auth-service:latest .
 minikube image load docker-auth-service:latest
 # répéter pour lawyer, booking, notification, audit, api-gateway
-```
 
-### Ingress Controller
-```powershell
 minikube addons enable ingress
 ```
 
----
-
-## Ordre d'application (local — Minikube)
-
+### Ordre d'application
 ```powershell
 kubectl apply -f 00-namespace.yaml
 kubectl apply -f 01-secrets.yaml
@@ -89,11 +93,63 @@ kubectl apply -f services/
 kubectl apply -f ingress.yaml
 ```
 
-## Vérifier le déploiement
+---
 
+## Déploiement cloud (Scaleway Kapsule)
+
+Les manifestes de `services/` sont déjà adaptés pour ce mode : `SPRING_DATASOURCE_URL` pointe vers l'IP privée RDB, les images pointent vers `rg.fr-par.scw.cloud/juribook/`.
+
+### 1. Connecter kubectl au cluster
+```powershell
+scw k8s kubeconfig install <uuid_du_cluster> region=fr-par
+kubectl get nodes
+```
+
+### 2. Créer le secret d'accès au registre privé
+```powershell
+kubectl create secret docker-registry regcred --docker-server=rg.fr-par.scw.cloud --docker-username=nologin --docker-password=<ta_secret_key> -n juribook
+kubectl patch serviceaccount default -n juribook -p "{\"imagePullSecrets\": [{\"name\": \"regcred\"}]}"
+```
+
+### 3. Ne PAS appliquer le dossier `postgres/`
+RDB (dépôt `juribook-terraform`) remplace les 5 conteneurs Postgres locaux.
+
+### 4. Ordre d'application
+```powershell
+kubectl apply -f 00-namespace.yaml
+kubectl apply -f 01-secrets.yaml    # POSTGRES_PASSWORD doit matcher db_app_password de Terraform
+kubectl apply -f 02-configmap.yaml
+
+kubectl apply -f kafka.yaml
+kubectl wait --for=condition=ready pod -l app=kafka -n juribook --timeout=120s
+kubectl apply -f kafka-init-job.yaml
+kubectl wait --for=condition=complete job/kafka-init -n juribook --timeout=60s
+
+kubectl apply -f mailhog.yaml
+kubectl apply -f services/
+```
+
+### 5. Créer les extensions SQL (une seule fois)
+RDB n'a pas d'endpoint public, édite `rdb-extensions-job.yaml` (remplace `<db_admin_password>`), applique, vérifie, supprime :
+```powershell
+kubectl apply -f rdb-extensions-job.yaml
+kubectl wait --for=condition=complete job/rdb-extensions-init -n juribook --timeout=60s
+kubectl logs job/rdb-extensions-init -n juribook
+kubectl delete -f rdb-extensions-job.yaml
+```
+
+### 6. Ingress Controller (absent par défaut sur Kapsule)
+```powershell
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/cloud/deploy.yaml
+kubectl apply -f ingress.yaml
+```
+
+---
+
+## Vérifier le déploiement (les deux environnements)
 ```powershell
 kubectl get pods -n juribook
-kubectl top pods -n juribook    # vérifie qu'aucun pod n'approche ses limites CPU/mémoire
+kubectl top pods -n juribook
 
 kubectl port-forward svc/api-gateway 8080:8080 -n juribook
 curl http://localhost:8080/actuator/health
@@ -101,19 +157,25 @@ curl http://localhost:8080/actuator/health
 
 ---
 
-## ☁️ Adapter pour un déploiement cloud
+## Intégration CI/CD
 
-Pour déployer sur un cluster managé (Scaleway Kapsule, EKS, etc.) avec une base de données managée externe plutôt que les 5 Postgres locaux :
+Depuis le Sprint 8.4, chaque dépôt de microservice (`juribook-auth-service`, etc.) possède son propre pipeline GitHub Actions qui, à chaque merge sur `develop`, build/teste/pousse une nouvelle image et exécute :
+```bash
+kubectl set image deployment/<service> <service>=rg.fr-par.scw.cloud/juribook/<service>:<sha> -n juribook
+```
 
-1. **Ne pas appliquer le dossier `postgres/`** — la base managée le remplace.
-2. **Dans chaque `services/*.yaml`**, remplacer `SPRING_DATASOURCE_URL` (actuellement `jdbc:postgresql://postgres-<service>:5432/<db>`) par l'endpoint de ta base managée, en ajoutant `?sslmode=require` si elle l'exige.
-3. **Remplacer `image: docker-<service>:latest`** par l'URL de ton registre cloud (ex: `rg.fr-par.scw.cloud/<namespace>/<service>:latest`), et passer `imagePullPolicy` à `Always`.
-4. **Adapter les `initContainers` `wait-for-postgres-*`** pour pointer vers l'IP/le host de la base managée plutôt que vers les Services Postgres locaux (qui n'existeront plus).
-5. **Vérifier le dimensionnement du nœud/node pool** : Kafka + MailHog + 6 microservices Java tournant simultanément ont besoin d'au moins ~4-8 Go de RAM et plusieurs vCPU de marge pour absorber les pics de démarrage — un nœud d'entrée de gamme (2-4 Go) peut se révéler insuffisant, comme observé en pratique.
-6. **Créer les extensions SQL manuellement** si ta base managée ne le permet pas via script d'init automatique (`uuid-ossp`, `pgcrypto`, `unaccent`) — généralement via un Job Kubernetes ponctuel exécuté une fois depuis l'intérieur du cluster si la base n'a pas d'endpoint public.
+**⚠️ Limite connue** : cette commande modifie le Deployment directement dans le cluster, sans mettre à jour les fichiers YAML de ce dépôt (qui référencent encore `:latest`). Si tu relances `kubectl apply -f services/` après un déploiement CI, ça écrase la version déployée par la CI et revient à l'ancienne image. Pistes pour résoudre ça plus tard : GitOps (Flux/ArgoCD) ou auto-commit du tag depuis la CI, non implémenté à ce stade, acceptable pour un projet portfolio.
 
 ## Nettoyage
-
 ```powershell
 kubectl delete namespace juribook
 ```
+
+## Dépôts liés
+
+| Dépôt | Rôle |
+|---|---|
+| `juribook-docker` | Environnement local (Docker Compose) |
+| `juribook-kubernetes` | Ce dépôt : manifestes K8s |
+| `juribook-terraform` | Infrastructure cloud (Kapsule, RDB, DNS) |
+| `juribook-auth-service` et 5 autres | Code applicatif + pipeline CI/CD |
