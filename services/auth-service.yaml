@@ -40,20 +40,20 @@ spec:
         app: auth-service
     spec:
       initContainers:
-        - name: wait-for-postgres-auth
+        - name: wait-for-rdb
           image: busybox:1.37
-          command: ["sh", "-c", "until nc -z postgres-auth 5432; do echo waiting for postgres-auth:5432; sleep 2; done"]
+          command: ["sh", "-c", "until nc -z 172.16.4.2 5432; do echo waiting for RDB 172.16.4.2:5432; sleep 2; done"]
       containers:
         - name: auth-service
-          image: docker-auth-service:latest
-          imagePullPolicy: IfNotPresent
+          image: rg.fr-par.scw.cloud/juribook/auth-service:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 8081
           env:
             - name: JAVA_OPTS
               value: "-XX:MaxRAMPercentage=75.0"
             - name: SPRING_DATASOURCE_URL
-              value: "jdbc:postgresql://postgres-auth:5432/authdb"
+              value: "jdbc:postgresql://172.16.4.2:5432/authdb?sslmode=require"
             - name: SPRING_DATASOURCE_USERNAME
               valueFrom:
                 secretKeyRef:

@@ -40,23 +40,23 @@ spec:
         app: lawyer-service
     spec:
       initContainers:
-        - name: wait-for-postgres-lawyer
+        - name: wait-for-rdb
           image: busybox:1.37
-          command: ["sh", "-c", "until nc -z postgres-lawyer 5432; do echo waiting for postgres-lawyer:5432; sleep 2; done"]
+          command: ["sh", "-c", "until nc -z 172.16.4.2 5432; do echo waiting for RDB 172.16.4.2:5432; sleep 2; done"]
         - name: wait-for-auth-service
           image: busybox:1.37
           command: ["sh", "-c", "until wget -q -O- http://auth-service:8081/actuator/health | grep -q UP; do echo waiting for auth-service; sleep 3; done"]
       containers:
         - name: lawyer-service
-          image: docker-lawyer-service:latest
-          imagePullPolicy: IfNotPresent
+          image: rg.fr-par.scw.cloud/juribook/lawyer-service:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 8082
           env:
             - name: JAVA_OPTS
               value: "-XX:MaxRAMPercentage=75.0"
             - name: SPRING_DATASOURCE_URL
-              value: "jdbc:postgresql://postgres-lawyer:5432/lawyerdb"
+              value: "jdbc:postgresql://172.16.4.2:5432/lawyerdb?sslmode=require"
             - name: SPRING_DATASOURCE_USERNAME
               valueFrom:
                 secretKeyRef:

@@ -40,20 +40,20 @@ spec:
         app: audit-service
     spec:
       initContainers:
-        - name: wait-for-postgres-audit
+        - name: wait-for-rdb
           image: busybox:1.37
-          command: ["sh", "-c", "until nc -z postgres-audit 5432; do echo waiting for postgres-audit:5432; sleep 2; done"]
+          command: ["sh", "-c", "until nc -z 172.16.4.2 5432; do echo waiting for RDB 172.16.4.2:5432; sleep 2; done"]
       containers:
         - name: audit-service
-          image: docker-audit-service:latest
-          imagePullPolicy: IfNotPresent
+          image: rg.fr-par.scw.cloud/juribook/audit-service:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 8085
           env:
             - name: JAVA_OPTS
               value: "-XX:MaxRAMPercentage=75.0"
             - name: SPRING_DATASOURCE_URL
-              value: "jdbc:postgresql://postgres-audit:5432/auditdb"
+              value: "jdbc:postgresql://172.16.4.2:5432/auditdb?sslmode=require"
             - name: SPRING_DATASOURCE_USERNAME
               valueFrom:
                 secretKeyRef:

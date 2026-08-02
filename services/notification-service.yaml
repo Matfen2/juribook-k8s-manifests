@@ -40,9 +40,9 @@ spec:
         app: notification-service
     spec:
       initContainers:
-        - name: wait-for-postgres-notification
+        - name: wait-for-rdb
           image: busybox:1.37
-          command: ["sh", "-c", "until nc -z postgres-notification 5432; do echo waiting for postgres-notification:5432; sleep 2; done"]
+          command: ["sh", "-c", "until nc -z 172.16.4.2 5432; do echo waiting for RDB 172.16.4.2:5432; sleep 2; done"]
         - name: wait-for-mailhog
           image: busybox:1.37
           command: ["sh", "-c", "until nc -z mailhog 1025; do echo waiting for mailhog:1025; sleep 2; done"]
@@ -57,15 +57,15 @@ spec:
           command: ["sh", "-c", "until wget -q -O- http://booking-service:8083/actuator/health | grep -q UP; do echo waiting for booking-service; sleep 3; done"]
       containers:
         - name: notification-service
-          image: docker-notification-service:latest
-          imagePullPolicy: IfNotPresent
+          image: rg.fr-par.scw.cloud/juribook/notification-service:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 8084
           env:
             - name: JAVA_OPTS
               value: "-XX:MaxRAMPercentage=75.0"
             - name: SPRING_DATASOURCE_URL
-              value: "jdbc:postgresql://postgres-notification:5432/notificationdb"
+              value: "jdbc:postgresql://172.16.4.2:5432/notificationdb?sslmode=require"
             - name: SPRING_DATASOURCE_USERNAME
               valueFrom:
                 secretKeyRef:

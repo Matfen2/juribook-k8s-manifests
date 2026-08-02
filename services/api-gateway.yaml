@@ -57,8 +57,8 @@ spec:
           command: ["sh", "-c", "until wget -q -O- http://audit-service:8085/actuator/health | grep -q UP; do echo waiting for audit-service; sleep 3; done"]
       containers:
         - name: api-gateway
-          image: docker-api-gateway:latest
-          imagePullPolicy: IfNotPresent
+          image: rg.fr-par.scw.cloud/juribook/api-gateway:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 8080
           env:
