@@ -1,0 +1,121 @@
+# ═══════════════════════════════════════════════════════════
+#  lawyer-service — Deployment + Service
+#
+#  ⚠️ Image locale : sur Minikube/Kind, build puis charge l'image :
+#    docker build -t docker-lawyer-service:latest .
+#    minikube image load docker-lawyer-service:latest
+#  Sur un cluster cloud, remplace l'image par l'URL de ton
+#  registre (voir README, section Cloud) et mets imagePullPolicy: Always.
+#
+#  JAVA_OPTS=-XX:MaxRAMPercentage=75.0 : contraint la heap JVM à
+#  75% de la limite mémoire du conteneur, cohérent avec le
+#  Dockerfile (ENTRYPOINT lit $JAVA_OPTS). Sans ça, la JVM peut
+#  mal évaluer la mémoire disponible et se faire tuer (OOMKilled).
+#
+#  Limite CPU à "1" (pas 500m) : Spring Boot est gourmand en CPU
+#  au démarrage (JIT, chargement de classes) ; une limite trop
+#  basse provoque un throttling sévère qui fait échouer les
+#  probes de liveness en boucle avant même que l'appli ait fini
+#  de démarrer.
+#
+#  startupProbe généreuse (5 min de budget) : laisse le temps à
+#  la JVM de démarrer sous charge partagée sans être tuée
+#  prématurément — readiness/liveness ne s'activent qu'après.
+# ═══════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lawyer-service
+  namespace: juribook-production
+  labels:
+    app: lawyer-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lawyer-service
+  template:
+    metadata:
+      labels:
+        app: lawyer-service
+    spec:
+      initContainers:
+        - name: wait-for-rdb
+          image: busybox:1.37
+          command: ["sh", "-c", "until nc -z 172.16.4.2 5432; do echo waiting for RDB 172.16.4.2:5432; sleep 2; done"]
+        - name: wait-for-auth-service
+          image: busybox:1.37
+          command: ["sh", "-c", "until wget -q -O- http://auth-service:8081/actuator/health | grep -q UP; do echo waiting for auth-service; sleep 3; done"]
+      containers:
+        - name: lawyer-service
+          image: rg.fr-par.scw.cloud/juribook/lawyer-service:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8082
+          env:
+            - name: JAVA_OPTS
+              value: "-XX:MaxRAMPercentage=75.0"
+            - name: SPRING_DATASOURCE_URL
+              value: "jdbc:postgresql://172.16.4.2:5432/lawyerdb_prod?sslmode=require"
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_USER
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_PASSWORD
+            - name: SPRING_KAFKA_BOOTSTRAP_SERVERS
+              valueFrom:
+                configMapKeyRef:
+                  name: juribook-common-config
+                  key: SPRING_KAFKA_BOOTSTRAP_SERVERS
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: jwt-secret
+                  key: JWT_SECRET
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8082
+            periodSeconds: 10
+            failureThreshold: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8082
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8082
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 150m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lawyer-service
+  namespace: juribook-production
+spec:
+  selector:
+    app: lawyer-service
+  ports:
+    - port: 8082
+      targetPort: 8082
+  type: ClusterIP

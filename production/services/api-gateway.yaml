@@ -1,0 +1,143 @@
+# ═══════════════════════════════════════════════════════════
+#  api-gateway — Deployment + Service
+#
+#  ⚠️ Image locale : sur Minikube/Kind, build puis charge l'image :
+#    docker build -t docker-api-gateway:latest .
+#    minikube image load docker-api-gateway:latest
+#  Sur un cluster cloud, remplace l'image par l'URL de ton
+#  registre (voir README, section Cloud) et mets imagePullPolicy: Always.
+#
+#  JAVA_OPTS=-XX:MaxRAMPercentage=75.0 : contraint la heap JVM à
+#  75% de la limite mémoire du conteneur, cohérent avec le
+#  Dockerfile (ENTRYPOINT lit $JAVA_OPTS). Sans ça, la JVM peut
+#  mal évaluer la mémoire disponible et se faire tuer (OOMKilled).
+#
+#  Limite CPU à "1" (pas 500m) : Spring Boot est gourmand en CPU
+#  au démarrage (JIT, chargement de classes) ; une limite trop
+#  basse provoque un throttling sévère qui fait échouer les
+#  probes de liveness en boucle avant même que l'appli ait fini
+#  de démarrer.
+#
+#  startupProbe généreuse (5 min de budget) : laisse le temps à
+#  la JVM de démarrer sous charge partagée sans être tuée
+#  prématurément — readiness/liveness ne s'activent qu'après.
+# ═══════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  namespace: juribook-production
+  labels:
+    app: api-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-gateway
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+    spec:
+      initContainers:
+        - name: wait-for-auth-service
+          image: busybox:1.37
+          command: ["sh", "-c", "until wget -q -O- http://auth-service:8081/actuator/health | grep -q UP; do echo waiting for auth-service; sleep 3; done"]
+        - name: wait-for-lawyer-service
+          image: busybox:1.37
+          command: ["sh", "-c", "until wget -q -O- http://lawyer-service:8082/actuator/health | grep -q UP; do echo waiting for lawyer-service; sleep 3; done"]
+        - name: wait-for-booking-service
+          image: busybox:1.37
+          command: ["sh", "-c", "until wget -q -O- http://booking-service:8083/actuator/health | grep -q UP; do echo waiting for booking-service; sleep 3; done"]
+        - name: wait-for-notification-service
+          image: busybox:1.37
+          command: ["sh", "-c", "until wget -q -O- http://notification-service:8084/actuator/health | grep -q UP; do echo waiting for notification-service; sleep 3; done"]
+        - name: wait-for-audit-service
+          image: busybox:1.37
+          command: ["sh", "-c", "until wget -q -O- http://audit-service:8085/actuator/health | grep -q UP; do echo waiting for audit-service; sleep 3; done"]
+      containers:
+        - name: api-gateway
+          image: rg.fr-par.scw.cloud/juribook/api-gateway:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          env:
+            - name: JAVA_OPTS
+              value: "-XX:MaxRAMPercentage=75.0" 
+            - name: SPRING_KAFKA_BOOTSTRAP_SERVERS
+              valueFrom:
+                configMapKeyRef:
+                  name: juribook-common-config
+                  key: SPRING_KAFKA_BOOTSTRAP_SERVERS
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: jwt-secret
+                  key: JWT_SECRET
+            - name: AUTH_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: juribook-common-config
+                  key: AUTH_SERVICE_URL
+            - name: LAWYER_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: juribook-common-config
+                  key: LAWYER_SERVICE_URL
+            - name: BOOKING_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: juribook-common-config
+                  key: BOOKING_SERVICE_URL
+            - name: NOTIFICATION_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: juribook-common-config
+                  key: NOTIFICATION_SERVICE_URL
+            - name: AUDIT_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: juribook-common-config
+                  key: AUDIT_SERVICE_URL
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            periodSeconds: 10
+            failureThreshold: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 150m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+  namespace: juribook-production
+spec:
+  selector:
+    app: api-gateway
+  ports:
+    - port: 8080
+      targetPort: 8080
+  type: ClusterIP

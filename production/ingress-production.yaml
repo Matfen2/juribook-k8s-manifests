@@ -1,0 +1,26 @@
+# ═══════════════════════════════════════════════════════════
+#  Ingress — PRODUCTION
+#  Hostname distinct du staging (juribook.local) pour permettre
+#  aux deux Ingress de cohabiter sur le même contrôleur nginx
+#  sans conflit de routage.
+# ═══════════════════════════════════════════════════════════
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: juribook-ingress-production
+  namespace: juribook-production
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: app.juribook.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 8080

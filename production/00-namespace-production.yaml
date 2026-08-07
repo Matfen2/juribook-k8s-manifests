@@ -1,0 +1,11 @@
+# ═══════════════════════════════════════════════════════════
+#  Namespace de PRODUCTION — isolé du namespace "juribook"
+#  (staging) au sein du même cluster Kapsule.
+# ═══════════════════════════════════════════════════════════
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: juribook-production
+  labels:
+    project: juribook
+    environment: production

@@ -1,0 +1,76 @@
+# ═══════════════════════════════════════════════════════════
+#  kafka-init — Job one-shot qui provisionne les 8 topics puis
+#  se termine.
+#
+#  ⚠️ Le script ci-dessous reconstruit les 8 topics à partir du
+#  cahier des charges (UC-K1 à UC-K6) avec des valeurs de
+#  partitions/rétention par défaut. Si tu as un script
+#  create-topics.sh réel dans ton dépôt juribook-docker,
+#  remplace le contenu du ConfigMap pour rester cohérent avec
+#  ton environnement Docker Compose local.
+# ═══════════════════════════════════════════════════════════
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-init-script
+  namespace: juribook-production
+data:
+  create-topics.sh: |
+    #!/bin/sh
+    set -e
+
+    BOOTSTRAP="kafka:29092"
+
+    echo "Attente de Kafka..."
+    until kafka-topics --bootstrap-server "$BOOTSTRAP" --list; do
+      sleep 2
+    done
+
+    create_topic() {
+      name="$1"
+      partitions="$2"
+      retention_ms="$3"
+      echo "Création du topic $name (partitions=$partitions, retention=$retention_ms ms)"
+      kafka-topics --bootstrap-server "$BOOTSTRAP" \
+        --create --if-not-exists \
+        --topic "$name" \
+        --partitions "$partitions" \
+        --replication-factor 1 \
+        --config retention.ms="$retention_ms"
+    }
+
+    create_topic booking-events    3 604800000
+    create_topic slot-events       3 604800000
+    create_topic lawyer-events     3 604800000
+    create_topic review-events     3 604800000
+    create_topic search-events     3 604800000
+    create_topic document-events   3 604800000
+    create_topic abuse-events      3 604800000
+    create_topic audit-events      3 -1
+
+    echo "Tous les topics sont provisionnés."
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-init
+  namespace: juribook-production
+spec:
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: kafka-init
+          image: confluentinc/cp-kafka:7.6.1
+          command: ["sh", "/scripts/create-topics.sh"]
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: kafka-init-script
+            defaultMode: 0755
