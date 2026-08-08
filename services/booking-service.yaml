@@ -42,7 +42,7 @@ spec:
       initContainers:
         - name: wait-for-rdb
           image: busybox:1.37
-          command: ["sh", "-c", "until nc -z 172.16.4.2 5432; do echo waiting for RDB 172.16.4.2:5432; sleep 2; done"]
+          command: ["sh", "-c", "until nc -z 172.16.0.2 5432; do echo waiting for RDB 172.16.0.2:5432; sleep 2; done"]
         - name: wait-for-lawyer-service
           image: busybox:1.37
           command: ["sh", "-c", "until wget -q -O- http://lawyer-service:8082/actuator/health | grep -q UP; do echo waiting for lawyer-service; sleep 3; done"]
@@ -56,7 +56,7 @@ spec:
             - name: JAVA_OPTS
               value: "-XX:MaxRAMPercentage=75.0"
             - name: SPRING_DATASOURCE_URL
-              value: "jdbc:postgresql://172.16.4.2:5432/bookingdb?sslmode=require"
+              value: "jdbc:postgresql://172.16.0.2:5432/bookingdb?sslmode=require"
             - name: SPRING_DATASOURCE_USERNAME
               valueFrom:
                 secretKeyRef:

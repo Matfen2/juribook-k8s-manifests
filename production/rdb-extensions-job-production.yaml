@@ -27,7 +27,7 @@ spec:
           image: postgres:16-alpine
           env:
             - name: PGHOST
-              value: "172.16.4.2"
+              value: "172.16.0.2"
             - name: PGPORT
               value: "5432"
             - name: PGUSER
