@@ -12,8 +12,6 @@ kind: Ingress
 metadata:
   name: juribook-ingress
   namespace: juribook
-  annotations:
-    nginx.ingress.kubernetes.io/rewrite-target: /
 spec:
   ingressClassName: nginx
   rules:
