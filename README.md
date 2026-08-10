@@ -129,7 +129,7 @@ kubectl apply -f mailhog.yaml
 kubectl apply -f services/
 ```
 
-### 5. Créer les extensions SQL (une seule fois)
+### 5. Créer les extensions SQL
 RDB n'a pas d'endpoint public, édite `rdb-extensions-job.yaml` (remplace `<db_admin_password>`), applique, vérifie, supprime :
 ```powershell
 kubectl apply -f rdb-extensions-job.yaml
@@ -166,6 +166,41 @@ kubectl set image deployment/<service> <service>=rg.fr-par.scw.cloud/juribook/<s
 
 **⚠️ Limite connue** : cette commande modifie le Deployment directement dans le cluster, sans mettre à jour les fichiers YAML de ce dépôt (qui référencent encore `:latest`). Si tu relances `kubectl apply -f services/` après un déploiement CI, ça écrase la version déployée par la CI et revient à l'ancienne image. Pistes pour résoudre ça plus tard : GitOps (Flux/ArgoCD) ou auto-commit du tag depuis la CI, non implémenté à ce stade, acceptable pour un projet portfolio.
 
+## Test de charge
+
+### Résultats validés en production (Scaleway Kapsule)
+
+Test réalisé avec **Postman Collection Runner** sur le cluster cloud (`163.172.182.227`).
+
+| Métrique | Résultat |
+|---|---|
+| Requêtes totales | 102 (34 itérations × 3 endpoints) |
+| Durée totale | 12s 253ms |
+| Erreurs | **0** |
+| Temps de réponse moyen | **37 ms** |
+
+Détail par endpoint :
+
+| Endpoint | Status | Temps moyen |
+|---|---|---|
+| `GET /actuator/health` | 200 OK | ~21 ms |
+| `GET /api/lawyers` | 200 OK | ~51 ms |
+| `GET /api/specialties` | 200 OK | ~41 ms |
+
+### Reproduire le test avec Postman
+
+**Prérequis** : Postman Desktop (pas l'extension VS Code — les requêtes réseau y sont bloquées).
+
+1. Importe la collection JuriBook dans Postman
+2. Dans le dossier **Load Test**, configure le header `Host: juribook.local` sur chaque requête
+3. Les 3 requêtes pointent vers `http://<INGRESS_LB_IP>` :
+   - `GET /actuator/health`
+   - `GET /api/lawyers`
+   - `GET /api/specialties`
+4. Clique droit sur le dossier **Load Test** → **Run folder**
+5. Configure : **Iterations = 34**, **Delay = 0 ms**, décoche "Stop run if an error occurs"
+6. Lance et vérifie : 0 erreur, temps de réponse < 200 ms
+
 ## Monitoring
 
 ### Health checks applicatifs
@@ -193,7 +228,7 @@ kubectl get pods -n juribook
 # Tous les services doivent être 1/1 Running
 ```
 
-### Observabilité cloud — Scaleway Cockpit
+### Observabilité cloud - Scaleway Cockpit
 
 L'infrastructure est connectée à **Scaleway Cockpit** (Grafana managé). Accessible via : Console Scaleway → Monitoring → Cockpit → Access Grafana.
 
