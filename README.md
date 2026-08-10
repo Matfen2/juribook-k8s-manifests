@@ -159,12 +159,76 @@ curl http://localhost:8080/actuator/health
 
 ## Intégration CI/CD
 
-Depuis le Sprint 8.4, chaque dépôt de microservice (`juribook-auth-service`, etc.) possède son propre pipeline GitHub Actions qui, à chaque merge sur `develop`, build/teste/pousse une nouvelle image et exécute :
+Chaque dépôt de microservice (`juribook-auth-service`, etc.) possède son propre pipeline GitHub Actions qui, à chaque merge sur `develop`, build/teste/pousse une nouvelle image et exécute :
 ```bash
 kubectl set image deployment/<service> <service>=rg.fr-par.scw.cloud/juribook/<service>:<sha> -n juribook
 ```
 
 **⚠️ Limite connue** : cette commande modifie le Deployment directement dans le cluster, sans mettre à jour les fichiers YAML de ce dépôt (qui référencent encore `:latest`). Si tu relances `kubectl apply -f services/` après un déploiement CI, ça écrase la version déployée par la CI et revient à l'ancienne image. Pistes pour résoudre ça plus tard : GitOps (Flux/ArgoCD) ou auto-commit du tag depuis la CI, non implémenté à ce stade, acceptable pour un projet portfolio.
+
+## Monitoring
+
+### Health checks applicatifs
+
+Chaque microservice expose `/actuator/health` via Spring Boot Actuator. Les probes Kubernetes s'en servent directement :
+
+| Service | Port | Endpoint |
+|---|---|---|
+| api-gateway | 8080 | `http://api-gateway:8080/actuator/health` |
+| auth-service | 8081 | `http://auth-service:8081/actuator/health` |
+| lawyer-service | 8082 | `http://lawyer-service:8082/actuator/health` |
+| booking-service | 8083 | `http://booking-service:8083/actuator/health` |
+| notification-service | 8084 | `http://notification-service:8084/actuator/health` |
+| audit-service | 8085 | `http://audit-service:8085/actuator/health` |
+
+Vérification manuelle depuis l'extérieur du cluster (via le Load Balancer) :
+```powershell
+curl -H "Host: juribook.local" http://<INGRESS_LB_IP>/actuator/health
+# Réponse attendue : {"status":"UP"}
+```
+
+Vérification de tous les pods en une commande :
+```powershell
+kubectl get pods -n juribook
+# Tous les services doivent être 1/1 Running
+```
+
+### Observabilité cloud — Scaleway Cockpit
+
+L'infrastructure est connectée à **Scaleway Cockpit** (Grafana managé). Accessible via : Console Scaleway → Monitoring → Cockpit → Access Grafana.
+
+Deux datasources disponibles nativement :
+
+| Datasource | Type | Contenu |
+|---|---|---|
+| Scaleway Logs - fr-par | Loki | Logs infrastructure : autoscaler Kapsule, RDB PostgreSQL, CSI plugin |
+| Scaleway Metrics - fr-par | Prometheus | Métriques cluster : CPU/RAM nodes, réseau, volumes |
+
+**Logs applicatifs des pods** : non collectés nativement par Scaleway Cockpit (nécessiterait un DaemonSet Grafana Alloy ou un Control Plane dédié). En attendant, les logs sont accessibles via CLI :
+```powershell
+# Logs d'un service spécifique
+kubectl logs -n juribook -l app=auth-service --tail=100
+
+# Logs en temps réel
+kubectl logs -n juribook -l app=api-gateway -f
+
+# Logs de tous les services en une passe
+foreach ($svc in @("auth-service","lawyer-service","booking-service","notification-service","audit-service","api-gateway")) {
+    Write-Host "=== $svc ===" -ForegroundColor Cyan
+    kubectl logs -n juribook -l app=$svc --tail=20
+}
+```
+
+### Métriques cluster en temps réel
+```powershell
+# Consommation CPU/RAM par pod
+kubectl top pods -n juribook
+
+# Consommation par node
+kubectl top nodes
+```
+
+---
 
 ## Nettoyage
 ```powershell
