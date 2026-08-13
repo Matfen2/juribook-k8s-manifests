@@ -1,0 +1,52 @@
+# ═══════════════════════════════════════════════════════════
+#  rdb-extensions-job-production.yaml — Job PONCTUEL, à exécuter
+#  une seule fois après le premier déploiement en production,
+#  puis à supprimer.
+#
+#  Même logique que rdb-extensions-job.yaml (staging), mais sur
+#  les 5 bases suffixées _prod. Utilise le compte admin RDB
+#  (juribook_admin), commun à toute l'instance quel que soit
+#  l'environnement — pas besoin d'un admin distinct par env.
+#
+#  ⚠️ AVANT D'APPLIQUER : remplace <db_admin_password> par la
+#  vraie valeur (terraform.tfvars, dépôt juribook-terraform).
+#  Ne committe jamais ce fichier avec le mot de passe en dur.
+# ═══════════════════════════════════════════════════════════
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rdb-extensions-init-production
+  namespace: juribook-production
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: psql
+          image: postgres:16-alpine
+          env:
+            - name: PGHOST
+              value: "172.16.0.2"
+            - name: PGPORT
+              value: "5432"
+            - name: PGUSER
+              value: "juribook_admin"
+            - name: PGPASSWORD
+              value: "<db_admin_password>"
+            - name: PGSSLMODE
+              value: "require"
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              for db in authdb_prod lawyerdb_prod bookingdb_prod notificationdb_prod auditdb_prod; do
+                echo "Creating uuid-ossp on $db..."
+                psql -d "$db" -c 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'
+              done
+              echo "Creating pgcrypto on authdb_prod..."
+              psql -d authdb_prod -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
+              echo "Creating unaccent on lawyerdb_prod..."
+              psql -d lawyerdb_prod -c "CREATE EXTENSION IF NOT EXISTS unaccent;"
+              echo "Done."

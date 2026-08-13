@@ -1,9 +1,9 @@
 # ═══════════════════════════════════════════════════════════
-#  auth-service — Deployment + Service
+#  notification-service — Deployment + Service
 #
 #  ⚠️ Image locale : sur Minikube/Kind, build puis charge l'image :
-#    docker build -t docker-auth-service:latest .
-#    minikube image load docker-auth-service:latest
+#    docker build -t docker-notification-service:latest .
+#    minikube image load docker-notification-service:latest
 #  Sur un cluster cloud, remplace l'image par l'URL de ton
 #  registre (voir README, section Cloud) et mets imagePullPolicy: Always.
 #
@@ -25,35 +25,47 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: auth-service
-  namespace: juribook
+  name: notification-service
+  namespace: juribook-production
   labels:
-    app: auth-service
+    app: notification-service
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: auth-service
+      app: notification-service
   template:
     metadata:
       labels:
-        app: auth-service
+        app: notification-service
     spec:
       initContainers:
         - name: wait-for-rdb
           image: busybox:1.37
           command: ["sh", "-c", "until nc -z 172.16.0.2 5432; do echo waiting for RDB 172.16.0.2:5432; sleep 2; done"]
+        - name: wait-for-mailhog
+          image: busybox:1.37
+          command: ["sh", "-c", "until nc -z mailhog 1025; do echo waiting for mailhog:1025; sleep 2; done"]
+        - name: wait-for-auth-service
+          image: busybox:1.37
+          command: ["sh", "-c", "until wget -q -O- http://auth-service:8081/actuator/health | grep -q UP; do echo waiting for auth-service; sleep 3; done"]
+        - name: wait-for-lawyer-service
+          image: busybox:1.37
+          command: ["sh", "-c", "until wget -q -O- http://lawyer-service:8082/actuator/health | grep -q UP; do echo waiting for lawyer-service; sleep 3; done"]
+        - name: wait-for-booking-service
+          image: busybox:1.37
+          command: ["sh", "-c", "until wget -q -O- http://booking-service:8083/actuator/health | grep -q UP; do echo waiting for booking-service; sleep 3; done"]
       containers:
-        - name: auth-service
-          image: rg.fr-par.scw.cloud/juribook/auth-service:latest
+        - name: notification-service
+          image: rg.fr-par.scw.cloud/juribook/notification-service:latest
           imagePullPolicy: Always
           ports:
-            - containerPort: 8081
+            - containerPort: 8084
           env:
             - name: JAVA_OPTS
               value: "-XX:MaxRAMPercentage=75.0"
             - name: SPRING_DATASOURCE_URL
-              value: "jdbc:postgresql://172.16.0.2:5432/authdb?sslmode=require"
+              value: "jdbc:postgresql://172.16.0.2:5432/notificationdb_prod?sslmode=require"
             - name: SPRING_DATASOURCE_USERNAME
               valueFrom:
                 secretKeyRef:
@@ -69,29 +81,49 @@ spec:
                 configMapKeyRef:
                   name: juribook-common-config
                   key: SPRING_KAFKA_BOOTSTRAP_SERVERS
-            - name: JWT_SECRET
+            - name: MAIL_HOST
               valueFrom:
-                secretKeyRef:
-                  name: jwt-secret
-                  key: JWT_SECRET
+                configMapKeyRef:
+                  name: juribook-common-config
+                  key: MAIL_HOST
+            - name: MAIL_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: juribook-common-config
+                  key: MAIL_PORT
+            - name: BOOKING_SERVICE_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: juribook-common-config
+                  key: BOOKING_SERVICE_BASE_URL
+            - name: LAWYER_SERVICE_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: juribook-common-config
+                  key: LAWYER_SERVICE_BASE_URL
+            - name: AUTH_SERVICE_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: juribook-common-config
+                  key: AUTH_SERVICE_BASE_URL
           startupProbe:
             httpGet:
               path: /actuator/health
-              port: 8081
+              port: 8084
             periodSeconds: 10
             failureThreshold: 30
             timeoutSeconds: 5
           readinessProbe:
             httpGet:
               path: /actuator/health
-              port: 8081
+              port: 8084
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /actuator/health
-              port: 8081
+              port: 8084
             periodSeconds: 20
             timeoutSeconds: 5
             failureThreshold: 3
@@ -107,12 +139,12 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: auth-service
-  namespace: juribook
+  name: notification-service
+  namespace: juribook-production
 spec:
   selector:
-    app: auth-service
+    app: notification-service
   ports:
-    - port: 8081
-      targetPort: 8081
+    - port: 8084
+      targetPort: 8084
   type: ClusterIP

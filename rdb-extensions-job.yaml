@@ -1,0 +1,65 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rdb-extensions-script
+  namespace: juribook
+data:
+  init.sql: |
+    \connect authdb
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS pgcrypto;
+    CREATE EXTENSION IF NOT EXISTS unaccent;
+    \connect lawyerdb
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS pgcrypto;
+    CREATE EXTENSION IF NOT EXISTS unaccent;
+    \connect bookingdb
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS pgcrypto;
+    CREATE EXTENSION IF NOT EXISTS unaccent;
+    \connect notificationdb
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS pgcrypto;
+    CREATE EXTENSION IF NOT EXISTS unaccent;
+    \connect auditdb
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS pgcrypto;
+    CREATE EXTENSION IF NOT EXISTS unaccent;
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rdb-extensions
+  namespace: juribook
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: psql
+          image: postgres:16-alpine
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-admin-credentials
+                  key: POSTGRES_ADMIN_PASSWORD
+            - name: PGHOST
+              value: "172.16.0.2"
+            - name: PGPORT
+              value: "5432"
+            - name: PGUSER
+              value: "juribook_admin"
+          command:
+            - sh
+            - -c
+            - psql -d postgres -f /scripts/init.sql
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: rdb-extensions-script

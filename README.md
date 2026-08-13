@@ -1,181 +1,168 @@
-# JuriBook - Manifestes Kubernetes
+# JuriBook - Le Doctolib des avocats
 
-```
-juribook-kubernetes/
-├── 00-namespace.yaml
-├── 01-secrets.yaml
-├── 02-configmap.yaml
-├── kafka.yaml                      ← StatefulSet Kafka KRaft + Service headless
-├── kafka-init-job.yaml              ← Job one-shot : provisionne les 8 topics
-├── mailhog.yaml
-├── ingress.yaml
-├── rdb-extensions-job.yaml           ← Job one-shot, déploiement cloud uniquement
-├── postgres/                          ← Postgres local - usage Minikube uniquement
-│   ├── 00-init-scripts-configmaps.yaml
-│   └── postgres-{auth,lawyer,booking,notification,audit}.yaml
-└── services/
-    ├── auth-service.yaml
-    ├── lawyer-service.yaml
-    ├── booking-service.yaml
-    ├── notification-service.yaml
-    ├── audit-service.yaml
-    └── api-gateway.yaml
-```
+> Plateforme de mise en relation entre clients et avocats : recherche par spécialité et ville, réservation en ligne, gestion des disponibilités, notifications in-app, modération des avis.
 
-Manifestes Deployment/Service/Ingress pour les 6 microservices JuriBook, Kafka KRaft, PostgreSQL et MailHog. Applicables sur deux environnements distincts :
-- **Local** (Minikube), 5 Postgres locaux, images buildées et chargées à la main
-- **Cloud** (Scaleway Kapsule, dépôt `juribook-terraform`), base RDB managée, images poussées sur un registre, déploiement automatisé par CI/CD
-
-**Statut : ✅ validé sur les deux environnements.** Testé de bout en bout en local (Minikube) et sur le cluster cloud Scaleway (`curl /actuator/health` → `{"status":"UP"}`).
+![Stack](https://img.shields.io/badge/Java_21-Spring_Boot_4.1-blue) ![Stack](https://img.shields.io/badge/React_19-TypeScript-61DAFB) ![Stack](https://img.shields.io/badge/Kafka_KRaft-PostgreSQL_16-orange) ![Stack](https://img.shields.io/badge/Kubernetes-Scaleway_Kapsule-green)
 
 ---
 
-## ⚠️ Leçons apprises - déjà corrigées ici, à ne pas redécouvrir
+## Sommaire
 
-Quatre problèmes rencontrés en conditions réelles (Minikube puis Scaleway), tous déjà résolus dans les manifestes de ce dépôt.
-
-### 1. Kafka en `CrashLoopBackOff` - DNS auto-référencé
-Le broker KRaft doit se résoudre lui-même via `kafka-0.kafka` pour dialoguer avec le contrôleur. Un Service headless ne publie le DNS d'un pod qu'une fois ce pod `Ready` - boucle bloquante sans intervention.
-**Fix** (déjà dans `kafka.yaml`) : `publishNotReadyAddresses: true` sur le Service.
-
-### 2. Kafka - `path not writable` sur le volume
-Certains CSI drivers cloud (ex: Scaleway) montent les PVC avec un propriétaire `root`, alors que `cp-kafka` tourne en UID/GID 1000.
-**Fix** (déjà dans `kafka.yaml`) : `securityContext.fsGroup: 1000` au niveau du pod.
-
-### 3. Kafka - erreur `lost+found` au démarrage
-Les volumes formatés en ext4 (comportement courant chez les providers cloud) créent un dossier `lost+found` à leur racine ; Kafka refuse de démarrer si son répertoire de logs contient autre chose que des dossiers `topic-partition`.
-**Fix** (déjà dans `kafka.yaml`) : `KAFKA_LOG_DIRS` pointe vers un sous-répertoire (`/var/lib/kafka/data/logs`), pas la racine du volume monté.
-
-### 4. Microservices Java - `OOMKilled` et `CrashLoopBackOff` en boucle
-Deux causes cumulées, corrigées dans les 6 fichiers `services/*.yaml` :
-- **Mémoire** : `JAVA_OPTS=-XX:MaxRAMPercentage=75.0` injecté en variable d'environnement (le Dockerfile lit déjà `$JAVA_OPTS` dans son `ENTRYPOINT`).
-- **CPU** : limite remontée à `1` vCPU (pas `500m`). Spring Boot est très gourmand en CPU au démarrage ; une limite trop stricte provoque un throttling si sévère que le pod n'a jamais le temps de finir de démarrer avant que la probe de liveness ne le tue, en boucle infinie.
-- **`startupProbe`** ajoutée sur les 6 services (5 min de budget) : tant qu'elle n'a pas réussi une fois, `readiness`/`liveness` restent suspendues.
-
-### 5. Registre privé Scaleway - `insufficient_scope` malgré `docker login` réussi (déploiement cloud)
-Un `docker push` réussi depuis ta machine ne suffit pas : le **cluster Kapsule lui-même** a besoin de son propre secret Kubernetes pour tirer une image d'un registre privé. Copier `~/.docker/config.json` dans un secret ne fonctionne pas non plus si Docker Desktop délègue le stockage réel des credentials au gestionnaire Windows (`credsStore`), le fichier copié est alors vide de tokens exploitables.
-**Fix** :
-```powershell
-kubectl create secret docker-registry regcred --docker-server=rg.fr-par.scw.cloud --docker-username=nologin --docker-password=<ta_secret_key> -n juribook
-kubectl patch serviceaccount default -n juribook -p "{\"imagePullSecrets\": [{\"name\": \"regcred\"}]}"
-```
-Le ServiceAccount `default` du namespace hérite du secret pour tous les pods qui l'utilisent (cas de tous les nôtres).
+- [Vue d'ensemble](#vue-densemble)
+- [Stack technique](#stack-technique)
+- [Structure des repos](#structure-des-repos)
+- [Démarrage rapide](#démarrage-rapide)
+- [Architecture microservices](#architecture-microservices)
+- [Tests](#tests)
+- [CI/CD](#cicd)
+- [Infrastructure](#infrastructure)
+- [Auteur](#auteur)
 
 ---
 
-## Déploiement local (Minikube)
+## Vue d'ensemble
 
-### Prérequis
-```powershell
-docker build -t docker-auth-service:latest .
-minikube image load docker-auth-service:latest
-# répéter pour lawyer, booking, notification, audit, api-gateway
+JuriBook est une application full-stack composée de **6 microservices Spring Boot** et d'un **frontend React**, communiquant via Kafka (événements asynchrones) et REST (requêtes synchrones). Un `api-gateway` centralise l'authentification JWT et le routage.
 
-minikube addons enable ingress
-```
+### Fonctionnalités principales
 
-### Ordre d'application
-```powershell
-kubectl apply -f 00-namespace.yaml
-kubectl apply -f 01-secrets.yaml
-kubectl apply -f 02-configmap.yaml
-
-kubectl apply -f postgres/00-init-scripts-configmaps.yaml
-kubectl apply -f postgres/
-kubectl apply -f kafka.yaml
-
-kubectl wait --for=condition=ready pod -l app=kafka -n juribook --timeout=120s
-kubectl apply -f kafka-init-job.yaml
-kubectl wait --for=condition=complete job/kafka-init -n juribook --timeout=60s
-
-kubectl apply -f mailhog.yaml
-kubectl apply -f services/
-kubectl apply -f ingress.yaml
-```
+| Rôle | Fonctionnalités |
+|------|----------------|
+| **Client** | Inscription, recherche d'avocats, réservation, historique RDV, avis, notifications |
+| **Avocat** | Gestion des disponibilités, confirmation/annulation de RDV, profil |
+| **Admin** | Validation des profils avocats, analytics, journal d'audit, modération des avis, alertes d'abus |
 
 ---
 
-## Déploiement cloud (Scaleway Kapsule)
+## Stack technique
 
-Les manifestes de `services/` sont déjà adaptés pour ce mode : `SPRING_DATASOURCE_URL` pointe vers l'IP privée RDB, les images pointent vers `rg.fr-par.scw.cloud/juribook/`.
-
-### 1. Connecter kubectl au cluster
-```powershell
-scw k8s kubeconfig install <uuid_du_cluster> region=fr-par
-kubectl get nodes
-```
-
-### 2. Créer le secret d'accès au registre privé
-```powershell
-kubectl create secret docker-registry regcred --docker-server=rg.fr-par.scw.cloud --docker-username=nologin --docker-password=<ta_secret_key> -n juribook
-kubectl patch serviceaccount default -n juribook -p "{\"imagePullSecrets\": [{\"name\": \"regcred\"}]}"
-```
-
-### 3. Ne PAS appliquer le dossier `postgres/`
-RDB (dépôt `juribook-terraform`) remplace les 5 conteneurs Postgres locaux.
-
-### 4. Ordre d'application
-```powershell
-kubectl apply -f 00-namespace.yaml
-kubectl apply -f 01-secrets.yaml    # POSTGRES_PASSWORD doit matcher db_app_password de Terraform
-kubectl apply -f 02-configmap.yaml
-
-kubectl apply -f kafka.yaml
-kubectl wait --for=condition=ready pod -l app=kafka -n juribook --timeout=120s
-kubectl apply -f kafka-init-job.yaml
-kubectl wait --for=condition=complete job/kafka-init -n juribook --timeout=60s
-
-kubectl apply -f mailhog.yaml
-kubectl apply -f services/
-```
-
-### 5. Créer les extensions SQL (une seule fois)
-RDB n'a pas d'endpoint public, édite `rdb-extensions-job.yaml` (remplace `<db_admin_password>`), applique, vérifie, supprime :
-```powershell
-kubectl apply -f rdb-extensions-job.yaml
-kubectl wait --for=condition=complete job/rdb-extensions-init -n juribook --timeout=60s
-kubectl logs job/rdb-extensions-init -n juribook
-kubectl delete -f rdb-extensions-job.yaml
-```
-
-### 6. Ingress Controller (absent par défaut sur Kapsule)
-```powershell
-kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/cloud/deploy.yaml
-kubectl apply -f ingress.yaml
-```
+| Couche | Technologie |
+|--------|------------|
+| Backend | Java 21 / Spring Boot 4.1.0 / Spring Security / Spring Cloud Gateway |
+| Base de données | PostgreSQL 16 (une DB par service) / Flyway (migrations) |
+| Messaging | Apache Kafka KRaft (sans ZooKeeper) |
+| Frontend | React 19 / TypeScript / Vite / Tailwind CSS v4 / Framer Motion |
+| Auth | JWT (access 24h + refresh 7j rotatif) / HttpOnly cookies |
+| Conteneurs | Docker (multi-stage builds) / Docker Compose (local) |
+| Orchestration | Kubernetes / Scaleway Kapsule |
+| IaC | Terraform (Scaleway provider) |
+| CI/CD | GitHub Actions (build → push GHCR → deploy Kapsule) |
+| Monitoring | Scaleway Cockpit / Grafana Alloy |
+| Tests E2E | Cypress 13 (43 tests) |
 
 ---
 
-## Vérifier le déploiement (les deux environnements)
-```powershell
-kubectl get pods -n juribook
-kubectl top pods -n juribook
+## Structure des repos
 
-kubectl port-forward svc/api-gateway 8080:8080 -n juribook
-curl http://localhost:8080/actuator/health
 ```
+Matfen2/
+├── juribook-auth-service        # Authentification & gestion des utilisateurs
+├── juribook-lawyer-service      # Profils avocats, disponibilités, avis
+├── juribook-booking-service     # Réservations & créneaux
+├── juribook-notification-service # Notifications in-app
+├── juribook-audit-service       # Journal d'audit & détection d'abus
+├── juribook-api-gateway         # Spring Cloud Gateway + validation JWT
+├── juribook-frontend            # React 19 + TypeScript
+└── juribook-k8s-manifests       # Manifestes Kubernetes & Terraform
+```
+
+Chaque service backend est un projet Maven **indépendant** (pas de parent POM).
 
 ---
 
-## Intégration CI/CD
+## Démarrage rapide
 
-Depuis le Sprint 8.4, chaque dépôt de microservice (`juribook-auth-service`, etc.) possède son propre pipeline GitHub Actions qui, à chaque merge sur `develop`, build/teste/pousse une nouvelle image et exécute :
+Voir le [Guide de démarrage local](./docs/GETTING_STARTED.md) pour les instructions complètes Docker Compose.
+
 ```bash
-kubectl set image deployment/<service> <service>=rg.fr-par.scw.cloud/juribook/<service>:<sha> -n juribook
+# Cloner tous les repos
+git clone https://github.com/Matfen2/juribook-api-gateway
+git clone https://github.com/Matfen2/juribook-auth-service
+git clone https://github.com/Matfen2/juribook-lawyer-service
+git clone https://github.com/Matfen2/juribook-booking-service
+git clone https://github.com/Matfen2/juribook-notification-service
+git clone https://github.com/Matfen2/juribook-audit-service
+git clone https://github.com/Matfen2/juribook-frontend
+
+# Démarrer l'infrastructure (Kafka + PostgreSQL)
+cd juribook-k8s-manifests
+docker compose up -d
+
+# Démarrer chaque service (dans des terminaux séparés)
+cd juribook-auth-service && ./mvnw spring-boot:run
+# ... (répéter pour chaque service)
+
+# Démarrer le frontend
+cd juribook-frontend && npm install && npm run dev
 ```
 
-**⚠️ Limite connue** : cette commande modifie le Deployment directement dans le cluster, sans mettre à jour les fichiers YAML de ce dépôt (qui référencent encore `:latest`). Si tu relances `kubectl apply -f services/` après un déploiement CI, ça écrase la version déployée par la CI et revient à l'ancienne image. Pistes pour résoudre ça plus tard : GitOps (Flux/ArgoCD) ou auto-commit du tag depuis la CI, non implémenté à ce stade, acceptable pour un projet portfolio.
+L'application est accessible sur `http://localhost:5173`.
 
-## Nettoyage
-```powershell
-kubectl delete namespace juribook
+---
+
+## Architecture microservices
+
+Voir le [document d'architecture](./docs/ARCHITECTURE.md) pour le diagramme complet et les décisions de conception (ADR).
+
+**Ports locaux par défaut :**
+
+| Service | Port |
+|---------|------|
+| api-gateway | 8080 |
+| auth-service | 8081 |
+| lawyer-service | 8082 |
+| booking-service | 8083 |
+| notification-service | 8084 |
+| audit-service | 8085 |
+| frontend (Vite) | 5173 |
+| Kafka | 9092 |
+| PostgreSQL | 5432–5437 |
+
+---
+
+## Tests
+
+```bash
+# Tests unitaires (chaque service)
+./mvnw test
+
+# Tests E2E Cypress (frontend)
+cd juribook-frontend
+npm run cypress:open   # mode interactif
+npm run cypress:run    # mode headless (CI)
 ```
 
-## Dépôts liés
+**Couverture Cypress : 43 tests au vert** répartis sur :
+- `auth-flow.cy.ts` - inscription, connexion, déconnexion, routes protégées
+- `notifications-flow.cy.ts` - badge, liste, mark-as-read
+- *(autres suites par feature)*
 
-| Dépôt | Rôle |
-|---|---|
-| `juribook-docker` | Environnement local (Docker Compose) |
-| `juribook-kubernetes` | Ce dépôt : manifestes K8s |
-| `juribook-terraform` | Infrastructure cloud (Kapsule, RDB, DNS) |
-| `juribook-auth-service` et 5 autres | Code applicatif + pipeline CI/CD |
+---
+
+## CI/CD
+
+Chaque push sur `main` déclenche le pipeline GitHub Actions :
+
+1. **Build** - `mvn package` / `npm run build`
+2. **Docker** - build multi-stage + push sur GHCR
+3. **Approval** - gate manuel avant déploiement en production
+4. **Deploy** - `kubectl rollout` sur Scaleway Kapsule
+
+---
+
+## Infrastructure
+
+L'infrastructure Scaleway est provisionnée via Terraform (repo `juribook-k8s-manifests/terraform/`) :
+
+- **Kapsule** - cluster Kubernetes managé
+- **RDB** - PostgreSQL 16 managé (une instance par service, réseau privé)
+- **Cockpit** - métriques & logs via Grafana Alloy
+
+---
+
+## Auteur
+
+**Mathieu Fenouil** — Développeur Full-Stack (Java / Spring Boot + React / TypeScript)
+
+- GitHub : [github.com/Matfen2](https://github.com/Matfen2)
+- LinkedIn : [linkedin.com/in/mathieu-fenouil-développeur-full-stack](https://www.linkedin.com/in/mathieu-fenouil-développeur-full-stack/)
